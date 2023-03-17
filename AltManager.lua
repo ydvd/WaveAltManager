@@ -33,18 +33,12 @@ local name_label = "" -- Name
 local mythic_done_label = "Highest M+"
 local mythic_rewards_label = "M+ Rewards"
 local mythic_keystone_label = "Keystone"
-local seals_bought_label = "Seals obtained"
-local artifact_research_time_label = "Next level in"
 local depleted_label = "Depleted"
 local worldboss_label = "World Boss"
 local conquest_label = "Conquest"
 local conquest_earned_label = "Conquest Earned"
 local sl_renown_label = "SL Renown"
 local df_renown_label = "Renown"
-local stygia_label = "Cosmic Flux"
-local soul_ash_label = "Soul Ash"
-local reservoir_anima_label = "Stored Anima"
-local torghast_label = "Torghast"
 local valor_label = "Valor"
 
 local VERSION = "Wave 1.3.0"
@@ -109,7 +103,9 @@ local dungeons = {
 
  local world_boss_quests = {
 	[69930] = "Basrikron",
-	[69929] = "Stunraan"
+	[69929] = "Stunraan",
+	[10148229] = "Bazual",
+	[99999] = "Liskanoth" -- Fix this :3
 };
 
 
@@ -137,7 +133,9 @@ end
 
 local function true_numel(t)
 	local c = 0
-	for k, v in pairs(t) do c = c + 1 end
+	for k, v in pairs(t) do 
+		c = c + 1 
+	end
 	return c
 end
 
@@ -148,6 +146,7 @@ function SlashCmdList.ALTMANAGER(cmd, editbox)
 		print("   \"/alts purge\" to remove all stored data.")
 		print("   \"/alts remove name\" to remove characters by name.")
 		print("   \"/alts keys\" to list the keys of all characters. [WIP]")
+		print("   \"/alts todo\" to see what's still in ")
 	elseif rqst == "purge" then
 		AltManager:Purge();
 	elseif rqst == "remove" then
@@ -159,9 +158,10 @@ function SlashCmdList.ALTMANAGER(cmd, editbox)
 		print("    - Write keylist for /alts keys")
 		print("    - Clean up code -> remove old unused functions etc.")
 		print("    - Clean up code -> make it neat")
+		print("    - Print primal focus / conc primal focus")
+		print("    - Swap raid prog and less important stuff")
+		print("       - Or other stuff in the unroll?")
 
-	-- elseif rqst == "kicktest" then
-	-- 	AltManager:KickTest(true);
 	else
 		AltManager:ShowInterface();
 	end
@@ -216,11 +216,11 @@ do
         	AltManager:OnLogin();
 		end
 		if event == "PLAYER_LEAVING_WORLD" or event == "ARTIFACT_XP_UPDATE" then
-			local data = AltManager:CollectData(false);
+			local data = AltManager:CollectData();
 			AltManager:StoreData(data);
 		end
 		if (event == "BAG_UPDATE_DELAYED" or event == "QUEST_TURNED_IN" or event == "CHAT_MSG_CURRENCY" or event == "CURRENCY_DISPLAY_UPDATE") and AltManager.addon_loaded then
-			local data = AltManager:CollectData(false);
+			local data = AltManager:CollectData();
 			AltManager:StoreData(data);
 		end
 		
@@ -512,7 +512,7 @@ function AltManager:StoreData(data)
 	end
 end
 
-function AltManager:CollectData(do_artifact)
+function AltManager:CollectData()
 	
 	if UnitLevel('player') < min_level then return end;
 	-- this is an awful hack that will probably have some unforeseen consequences,
@@ -520,23 +520,24 @@ function AltManager:CollectData(do_artifact)
 	-- goes.
 	_, i = GetAverageItemLevel()
 	if i == 0 then return end;
-
-	-- fix this when i'm not on a laptop at work
-	do_artifact = false
 	
-	local name = UnitName('player')
-	local _, class = UnitClass('player')
+	--[[----------------------------- 
+	|								| 
+	|		Gather basic info		|	
+	|								| 
+	-----------------------------]]--
+
+	local name = UnitName('player');
+	local _, class = UnitClass('player');
+	local _, ilevel = GetAverageItemLevel();
 	local dungeon = nil;
 	local expire = nil;
 	local level = nil;
 	local seals = nil;
-	local coalescing_visions = 0;
 	local seals_bought = nil;
 	local artifact_level = nil;
-	local next_research = nil;
 	local highest_mplus = 0;
 	local depleted = false;
-	local vessels = 0
 
 	local guid = UnitGUID('player');
 
@@ -545,6 +546,14 @@ function AltManager:CollectData(do_artifact)
 		mine_old = MethodAltManagerDB.data[guid];
 	end
 	
+
+	--[[----------------------------- 
+	|								| 
+	|	  	  Mythic+ data			|	
+	|								| 
+	-----------------------------]]--
+
+
 	-- C_MythicPlus.RequestRewards();
 	C_MythicPlus.RequestCurrentAffixes();
 	C_MythicPlus.RequestMapInfo();
@@ -557,19 +566,7 @@ function AltManager:CollectData(do_artifact)
         C_ChallengeMode.RequestLeaders(maps[i]);
     end
 
-	-- try the new api
-	-- highest_mplus = C_MythicPlus.GetWeeklyChestRewardLevel()
-
 	local run_history = C_MythicPlus.GetRunHistory(false, true);
-	
-	--[[for k,v in pairs(dungeons) do
-		C_MythicPlus.RequestMapInfo(k);
-		-- there is a problem with relogging and retaining old value :(
-		local _, l = C_MythicPlus.GetWeeklyBestForMap(k);
-		if l and l > highest_mplus then
-			highest_mplus = l;
-		end
-	end ]]--
 	
 	-- Find keystone
 	local keystone_found = false; 
@@ -582,62 +579,79 @@ function AltManager:CollectData(do_artifact)
 		level = C_MythicPlus.GetOwnedKeystoneLevel();
 	end
 
-	-- Looking for item in backpack (old keystone finder)
-	--[[for container=BACKPACK_CONTAINER, NUM_BAG_SLOTS do
-		local slots = C_Container.GetContainerNumSlots(container) -- SEO: Inventory inventory bags Bags
-		for slot=1, slots do
-			-- local _, _, _, _, _, _, slotLink, _, _, slotItemID = C_Container.GetContainerItemInfo(container, slot)
-			local slotItemID = C_Container.GetContainerItemID(container, slot)
-			
-			-- if slotItemID then print("Container " .. container .. " Slot " .. slot .. " has item: " .. slotItemID .. " :: " .. GetItemInfo(slotItemID)) end
-			
-			--	might as well check if the item is a vessel of horrific vision
-			-- or not
-			-- if slotItemID == 173363 then
-			-- 	vessels = vessels + 1
-			-- end
-			
-			-- DF Season 1
-			if slotItemID == 200686 then -- Primal Focus
-				nothing()
-			elseif slotItemID == 190455 then -- Concentrated Primal Focus
-				nothing()
-			elseif slotItemID == 190454 then -- Primal Chaos
-				nothing()
-			end
+	do -- old stuff hider
 
-			-- None of htis is needed anymore either - GetItemCount(ID) works!
-			
+		-- try the new api
+		-- highest_mplus = C_MythicPlus.GetWeeklyChestRewardLevel()
 
-			if slotItemID == 180653 then
-				-- local itemString = slotLink:match("|Hkeystone:([0-9:]+)|h(%b[])|h")
-				local itemString = C_Container.GetContainerItemLink(container, slot):match("|Hkeystone:([0-9:]+)|h(%b[])|h")
-				local info = { strsplit(":", itemString) }
-				dungeon = tonumber(info[2])
-				if not dungeon then dungeon = nil end
-				level = tonumber(info[3])
-				if not level then level = nil end
-				expire = tonumber(info[4])
-				keystone_found = true;
-			end 
-		end
-	end ]]--
+		--!-- OLD WEEKLY BEST GETTER --!--
+			--[[for k,v in pairs(dungeons) do
+				C_MythicPlus.RequestMapInfo(k);
+				-- there is a problem with relogging and retaining old value :(
+				local _, l = C_MythicPlus.GetWeeklyBestForMap(k);
+				if l and l > highest_mplus then
+					highest_mplus = l;
+				end
+			end ]]--
+
+		--!-- OLD KEYSTONE FINDER / BACKBACK LOOP --!--
+			-- Looking for item in backpack (old keystone finder)
+			--[[for container=BACKPACK_CONTAINER, NUM_BAG_SLOTS do
+				local slots = C_Container.GetContainerNumSlots(container) -- SEO: Inventory inventory bags Bags
+				for slot=1, slots do
+					-- local _, _, _, _, _, _, slotLink, _, _, slotItemID = C_Container.GetContainerItemInfo(container, slot)
+					local slotItemID = C_Container.GetContainerItemID(container, slot)
+					
+					-- if slotItemID then print("Container " .. container .. " Slot " .. slot .. " has item: " .. slotItemID .. " :: " .. GetItemInfo(slotItemID)) end
+					
+					--	might as well check if the item is a vessel of horrific vision
+					-- or not
+					-- if slotItemID == 173363 then
+					-- 	vessels = vessels + 1
+					-- end
+					
+					-- DF Season 1
+					if slotItemID == 200686 then -- Primal Focus
+						nothing()
+					elseif slotItemID == 190455 then -- Concentrated Primal Focus
+						nothing()
+					elseif slotItemID == 190454 then -- Primal Chaos
+						nothing()
+					end
+
+					-- None of htis is needed anymore either - GetItemCount(ID) works!
+					
+
+					if slotItemID == 180653 then
+						-- local itemString = slotLink:match("|Hkeystone:([0-9:]+)|h(%b[])|h")
+						local itemString = C_Container.GetContainerItemLink(container, slot):match("|Hkeystone:([0-9:]+)|h(%b[])|h")
+						local info = { strsplit(":", itemString) }
+						dungeon = tonumber(info[2])
+						if not dungeon then dungeon = nil end
+						level = tonumber(info[3])
+						if not level then level = nil end
+						expire = tonumber(info[4])
+						keystone_found = true;
+					end 
+				end
+			end ]]--
+	end
 	
+
+	--[[----------------------------- 
+	|								| 
+	|		Weekly Instances		|	
+	|	Raid, Worldboss, Islands?	|	
+	-----------------------------]]--
+
 
 	-- Check raid progress
 	local saves = GetNumSavedInstances();
 	local normal_difficulty = 14
 	local heroic_difficulty = 15
 	local mythic_difficulty = 16
-	for i = 1, saves do
+	for i = 1, saves do 
 		local name, _, reset, difficulty, _, _, _, _, _, _, bosses, killed_bosses = GetSavedInstanceInfo(i);
-
-		-- Castle Nathria IDs = {1735, 1744, 1745, 1746, 1747, 1748, 1750, 1755}
-		if name == C_Map.GetMapInfo(1735).name and reset > 0 then
-			if difficulty == normal_difficulty then nathria_normal = killed_bosses end
-			if difficulty == heroic_difficulty then nathria_heroic = killed_bosses end
-			if difficulty == mythic_difficulty then nathria_mythic = killed_bosses end
-		end
 
 		-- Vault of the Incarnates // fuck it, full string compare babyyyy
 		if name == "Vault of the Incarnates" and reset > 0 then
@@ -645,22 +659,14 @@ function AltManager:CollectData(do_artifact)
 			if difficulty == heroic_difficulty then VotI_heroic = killed_bosses end
 			if difficulty == mythic_difficulty then VotI_mythic = killed_bosses end
 		end
+		
+		-- if name == " ?? abbarus ?? " and reset > 0 then
+		-- 	if difficulty == normal_difficulty then abbarus_normal = killed_bosses end
+		-- 	if difficulty == heroic_difficulty then abbarus_heroic = killed_bosses end
+		-- 	if difficulty == mythic_difficulty then abbarus_mythic = killed_bosses end
+		-- end
 	end
 	
-	-- Can find map info quickly like this
-	-- /run for i=1,GetNumSavedInstances() do print(GetSavedInstanceInfo(i)) end
-	-- /run for i=0,20000 do if C_Map.GetMapInfo(i) then if C_Map.GetMapInfo(i).name == "Ny'alotha, the Waking City" then print(i) end end end
-	-- /run for i=2000,2400 do if GetLFGDungeonInfo(i) then print(i, GetLFGDungeonInfo(i)) end end 
-
-	--[[ 
-		local world_boss_quests = {
-		[61813] = "Valinor",
-		[61814] = "Nurgash", -- THIS IS A GUESS!
-		[61815] = "Oranomoros",
-		[61816] = "Mortanis", 
-	}
-	]]--
-
 	local worldboss = false
 	for k,v in pairs(world_boss_quests)do
 		if C_QuestLog.IsQuestFlaggedCompleted(k) then
@@ -668,46 +674,44 @@ function AltManager:CollectData(do_artifact)
 		end
 	end
 	
-	-- local conquest_earned = C_WeeklyRewards.GetConquestWeeklyProgress().progress;
-
-	-- this is how the official pvp ui does it, so if its wrong.. sue me
-	local currencyInfo = C_CurrencyInfo.GetCurrencyInfo(Constants.CurrencyConsts.CONQUEST_CURRENCY_ID);
-	local maxProgress = currencyInfo.maxQuantity;
-	local conquest_earned = math.min(currencyInfo.totalEarned, maxProgress);
-	local conquest_total = currencyInfo.quantity
-	local conquest_max = maxProgress;
-	
 	-- local _, _, _, islands, _ = GetQuestObjectiveInfo(C_IslandsQueue.GetIslandsWeeklyQuestID(), 1, false);
 	-- local islands_finished = C_QuestLog.IsQuestFlaggedCompleted(C_IslandsQueue.GetIslandsWeeklyQuestID())
 
-	
-	local _, ilevel = GetAverageItemLevel();
 
-	-- local pearls = GetCurrencyAmount(1721);
-	-- local residuum = GetCurrencyAmount(1718);
-	-- local echoes = GetCurrencyAmount(1803);
-	-- local corrupted_mementos = GetCurrencyAmount(1719); -- jebaited with 1744 id, which is probably the "in vision" currency
+	--[[----------------------------- 
+	|								| 
+	|			Currencies			|	
+	|								| 
+	-----------------------------]]--
 
-	-- /run for i=0,20000 do n,a = GetCurrencyInfo(i); if a == 1365 then print(i) end end
-	-- /run for i=0,20000 do n = C_CurrencyInfo.GetCurrencyInfo(i); if n ~= nil and n.name == "Stygia" then print(i) end end
-
-	-- local location = C_AzeriteItem.FindActiveAzeriteItem()
-	-- local neck_level
-	-- if not location then neck_level = 0
-	-- else neck_level = C_AzeriteItem.GetPowerLevel(location)
-	-- end
-
-	-- local stored_anima = GetCurrencyAmount(1813);
-
-	-- store data into a table
-
-	-- local now = C_DateAndTime.GetCurrentCalendarTime();
-
-	-- General: Other currencies
 	local copper = GetMoney();
-
-	-- Dragonflight: Listing currencies
 	local valor = GetCurrencyAmount(1191);
+
+	--!-- CONQUEST POINTS --!--
+	-- -- this is how the official pvp ui does it, so if its wrong.. sue me
+	-- local currencyInfo = C_CurrencyInfo.GetCurrencyInfo(Constants.CurrencyConsts.CONQUEST_CURRENCY_ID);
+	-- local maxProgress = currencyInfo.maxQuantity;
+	-- local conquest_earned = math.min(currencyInfo.totalEarned, maxProgress);
+	-- local conquest_total = currencyInfo.quantity
+	-- local conquest_max = maxProgress;
+	
+
+	--[[----------------------------- 
+	|								| 
+	|		  Inventory Items		|	
+	|								| 
+	-----------------------------]]--
+
+	local df_s1_primalchaos = GetItemCount(190454);
+	local df_s1_primalfocus = GetItemCount(200686) + (10 * GetItemCount(197921));
+	local df_s1_cprimalfocus = GetItemCount(190455) + (10 * GetItemCount(198046));
+
+
+	--[[----------------------------- 
+	|								| 
+	|			Reputations			|
+	|								| 
+	-----------------------------]]--
 
 	-- Order used mirrors summary tab NOT API ORDER !!!
 	local df_renown_dragonscale = C_MajorFactions.GetCurrentRenownLevel(2507);
@@ -715,18 +719,14 @@ function AltManager:CollectData(do_artifact)
 	local df_renown_iskaara = C_MajorFactions.GetCurrentRenownLevel(2511);
 	local df_renown_valdrakken = C_MajorFactions.GetCurrentRenownLevel(2510);
 	
-	local df_s1_primalchaos = GetItemCount(190454);
-	local df_s1_primalfocus = GetItemCount(200686);
-	local df_s1_cprimalfocus = GetItemCount(190455);
+
+	--[[----------------------------- 
+	|								| 
+	|		Build the table			|
+	|								| 
+	-----------------------------]]--
 
 	local char_table = {}
-	
-	-- hooksecurefunc(C_VignetteInfo, "GetVignettes", function(...) print("GetVignettes", ...); end)
-	-- hooksecurefunc(C_VignetteInfo, "GetVignetteInfo", function(...) print("GetVignetteInfo", ...); end)
-	-- /run for k, v in ipairs(GameTooltip.insertedFrames[1].widgetPools.pools.UIWidgetTemplateTextWithState.activeObjects) do print(k) end
-	-- /tinspect GameTooltip.insertedFrames[1]
-	-- /run VignettePinMixin:OnMouseEnter(); a, b, c, d = GameTooltip.insertedFrames[1]:GetChildren(); print(a.Text:GetText())
-	-- Looks like getting torghast progress with addon API is a nightmare right now
 
 	char_table.guid = UnitGUID('player');
 	char_table.name = name;
@@ -742,20 +742,14 @@ function AltManager:CollectData(do_artifact)
 
 	char_table.copper = copper;
 	char_table.valor = valor;
+	char_table.primchaos = df_s1_primalchaos;
+	char_table.primfocus = df_s1_primalfocus;
+	char_table.conprimfocus = df_s1_cprimalfocus;
 
-	--renown:
-	-- for each in array
-	-- if first then add normally
-	-- if not add a / beforehand
-	char_table.df_renown = {df_renown_dragonscale, df_renown_maruuk, df_renown_iskaara, df_renown_valdrakken};
-	char_table.df_renown_dragonscale = df_renown_dragonscale
-	char_table.df_renown_maruuk = df_renown_maruuk
-	char_table.df_renown_iskaara = df_renown_iskaara
-	char_table.df_renown_valdrakken = df_renown_valdrakken 
-
-	char_table.nathria_normal = nathria_normal;
-	char_table.nathria_heroic = nathria_heroic;
-	char_table.nathria_mythic = nathria_mythic;
+	char_table.df_renown = {df_renown_dragonscale, 
+							df_renown_maruuk, 
+							df_renown_iskaara, 
+							df_renown_valdrakken};
 
 	char_table.VotI_normal = VotI_normal;
 	char_table.VotI_heroic = VotI_heroic;
@@ -766,27 +760,11 @@ function AltManager:CollectData(do_artifact)
 	char_table.time_until_reset = C_DateAndTime.GetSecondsUntilDailyReset();
 	
 	-- old stuff
-	-- char_table.order_resources = order_resources;
-	-- char_table.veiled_argunite = veiled_argunite;
-	-- char_table.wakening_essence = wakening_essence;
 	-- char_table.islands =  islands; 
 	-- char_table.islands_finished = islands_finished;
-	-- char_table.pearls = pearls
-	-- char_table.residuum = residuum
-	-- char_table.corrupted_mementos = corrupted_mementos
-	-- char_table.neck_level = neck_level
-	-- char_table.echoes = echoes
-	-- char_table.seals = seals;
-	-- char_table.seals_bought = seals_bought;
-	-- char_table.vessels = vessels;
-	-- char_table.coalescing_visions = coalescing_visions;
-	-- char_table.conduit_charges = conduit_charges;
-	-- char_table.max_conduit_charges = max_conduit_charges;
-	-- char_table.stygia = stygia;
-	-- char_table.soul_ash = soul_ash;
-	-- char_table.sl_renown = sl_renown;
-	-- char_table.stored_anima = stored_anima;
-
+	-- char_table.nathria_normal = nathria_normal;
+	-- char_table.nathria_heroic = nathria_heroic;
+	-- char_table.nathria_mythic = nathria_mythic;
 
 	return char_table;
 end
@@ -920,7 +898,6 @@ function AltManager:OpenInstancesUnroll(my_rows, button)
 	self.main_frame.background:SetAllPoints();
 
 end
-
 function AltManager:CloseInstancesUnroll()
 	-- do rollup
 	self.main_frame:SetSize(self:CalculateXSizeNoGuidCheck(), sizey);
@@ -929,17 +906,6 @@ function AltManager:CloseInstancesUnroll()
 	for k, v in pairs(self.instances_unroll.alt_columns) do
 		v:Hide()
 	end
-end
-
-function AltManager:ConduitChargesRegenerated(alt_data)
-	local last_check = alt_data.data_obtained;
-	local next_tick = alt_data.time_until_reset;
-	local now = time();
-
-	local elapsed = now - last_check;
-	local first = elapsed - next_tick;
-	if first < 0 then return 0 end
-	return 1 + (first % (24 * 3600))
 end
 
 function AltManager:ProduceRelevantMythics(run_history)
@@ -988,7 +954,7 @@ function AltManager:MythicRunHistoryString(alt_data)
 	return result
 end
 
-function AltManager:CreateContent()
+function AltManager:CreateContent() -- ! -- Magic happens here -- ! --
 
 	-- Close button
 	self.main_frame.closeButton = CreateFrame("Button", "CloseButton", self.main_frame, "UIPanelCloseButton");
@@ -1053,6 +1019,11 @@ function AltManager:CreateContent()
 			label = valor_label,
 			data = function(alt_data) return tostring(alt_data.valor or "0") end,
 		},
+		pchaos = {
+			order = 6.11,
+			label = "Primal Chaos",
+			data = function(alt_data) return tostring(alt_data.primchaos or "0") end,
+		},
 		money = { -- 6.2
 			order = 6.2,
 			label = "Gold",
@@ -1083,11 +1054,11 @@ function AltManager:CreateContent()
 			label = worldboss_label,
 			data = function(alt_data) return alt_data.worldboss and (alt_data.worldboss .. " killed") or "-" end,
 		},
-		conquest_pts = { -- 8.2
-			order = 8.2,
-			label = conquest_label,
-			data = function(alt_data) return (alt_data.conquest_total and tostring(alt_data.conquest_total) or "0")  end,
-		},
+		-- conquest_pts = { -- 8.2
+		-- 	order = 8.2,
+		-- 	label = conquest_label,
+		-- 	data = function(alt_data) return (alt_data.conquest_total and tostring(alt_data.conquest_total) or "0")  end,
+		-- },
 		-- conquest_cap = {
 		-- 	order = 9,
 		-- 	label = conquest_earned_label,
@@ -1303,7 +1274,7 @@ function AltManager:PrintKeys()
 		print("Looking at alt " .. alt)
 	-- if db.data == nil then print("no worky db") end
 	-- if db.data[0] == nil then print ("no  worky first entry") end
-	-- print("Wave Manager - Known Keys: ");
+	print("Wave Manager - Known Keys: ");
 	-- for alt_guid, alt_data in spairs(db.data, function(t,a,b) return t[a].order > t[b].order end) do
 	-- 	alt_guid = alt_guid + 1
 		data = function(alt_data) return (dungeons[alt_data.dungeon] or alt_data.dungeon) .. " +" .. tostring(alt_data.level); end,
@@ -1424,24 +1395,3 @@ function AltManager:TimeString(length)
 	end
 	return string.format("%d days %d hrs", length / 86400, (length % 86400) / 3600);
 end
-
--- function AltManager:KickTest(verbose)
--- 	print("testing kicktest")
--- 	i=0;
--- 	while(i<1000)do 
--- 		gname,_,_,_,_,_,_,_,n=GetGuildRosterInfo(i);
--- 		if(not n)then 
--- 			if not (gname == nil) then
--- 				if verbose then
--- 					print("Checking " .. gname)
--- 				end
--- 				if(gname=="Mautay-ChamberofAspects")then 
--- 					print("-------Found the mooti! He's on " .. gname);
--- 					-- GuildUninvite(c);
--- 				end;
--- 			end
--- 		end;
-		
--- 		i=i+1;
--- 	end;
--- end
